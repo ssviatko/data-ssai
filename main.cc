@@ -1144,6 +1144,46 @@ static void run_circular_tests()
 	check(l_throws([&] { l_empty.circular_read_uint8(); }), "circular read from empty data throws");
 }
 
+static void run_concat_tests()
+{
+	data l_a("ab");
+	data l_b("cd");
+	data l_empty;
+
+	// two or more arguments are appended in order
+	data l_ab(l_a, l_b);
+	check(l_ab.bytes() == std::vector<uint8_t>({'a', 'b', 'c', 'd'}), "concatenating constructor appends arguments in order");
+	check(l_ab.get_write_cursor() == 4 && l_ab.get_read_cursor() == 0, "concatenated data has write cursor at the end and read cursor at 0");
+
+	data l_many(l_a, l_b, l_a, l_b, l_a);
+	check(l_many.size() == 10 && l_many.bytes()[4] == 'a' && l_many.bytes()[9] == 'b', "concatenating constructor takes any number of arguments");
+
+	// empty arguments and repeats of the same object
+	data l_mixed(l_empty, l_a, l_empty, l_b, l_empty);
+	check(l_mixed.bytes() == l_ab.bytes(), "empty arguments contribute nothing");
+	data l_twice(l_a, l_a);
+	check(l_twice.size() == 4 && l_twice.bytes()[2] == 'a', "the same object can be passed more than once");
+	data l_none(l_empty, l_empty);
+	check(l_none.size() == 0 && l_none.get_write_cursor() == 0, "concatenating empty data gives empty data");
+
+	// a single data argument is still a plain copy, and the arguments are not modified
+	data l_copy(l_a);
+	check(l_copy.bytes() == l_a.bytes() && l_a.size() == 2 && l_b.size() == 2, "single argument copies and the sources are unchanged");
+
+	// binary content with structured values, read back in order
+	data l_x;
+	l_x.append_uint32(0xdeadbeef);
+	data l_y;
+	l_y.append_string("hi");
+	l_y.append_double(2.5);
+	data l_xy(l_x, l_y);
+	check(l_xy.read_uint32() == 0xdeadbeef && l_xy.read_string() == "hi" && l_xy.read_double() == 2.5, "concatenated data reads back each part in order");
+
+	// the result is independent of the sources and can be appended to
+	l_xy.append_uint8(0x7f);
+	check(l_xy.size() == l_x.size() + l_y.size() + 1 && l_x.size() == 4, "appending to the result leaves the sources alone");
+}
+
 static void run_file_tests()
 {
 	const std::string l_path = "data-ssai-test.tmp";
@@ -1194,6 +1234,7 @@ int main(int, char **)
 	run_arbitrary_tests();
 	run_random_tests();
 	run_circular_tests();
+	run_concat_tests();
 	run_file_tests();
 	run_huffman_tests();
 	run_lzma_tests();

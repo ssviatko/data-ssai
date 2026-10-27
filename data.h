@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // Byte array with independent read and write cursors.
@@ -26,6 +27,13 @@ public:
 	data();
 	data(const uint8_t *a_bytes, size_t a_len);	// write cursor starts at the end, read cursor at 0
 	explicit data(const std::string& a_str);	// copies the string's raw bytes (no length prefix); write cursor starts at the end, read cursor at 0
+	// concatenates the bytes of each argument, in order; the result has the default byte order,
+	// write cursor at the end and read cursor at 0 (the arguments' cursors and byte orders are not carried over)
+	template<typename... Args, typename = std::enable_if_t<(sizeof...(Args) > 0) && (std::is_same_v<Args, data> && ...)>>
+	explicit data(const Args&... a_args)
+	{
+		(append(a_args.bytes().data(), a_args.size()), ...);
+	}
 	~data();
 
 	void set_byte_order(byte_order a_order);

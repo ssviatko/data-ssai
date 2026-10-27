@@ -81,6 +81,15 @@ Creates a buffer holding a copy of `a_len` bytes from `a_bytes`. The write curso
 #### `explicit data(const std::string& a_str)`
 Creates a buffer holding a copy of the string's raw bytes. No length prefix is added (unlike `append_string`), and embedded NULs are kept. The write cursor starts at the end and the read cursor at 0.
 
+#### `explicit data(const data& a_first, const data& a_second, ...)`
+Variadic constructor taking one or more `data` objects (any number; every argument must be a `data`). The new buffer holds their bytes appended in argument order. The result has the default byte order, the write cursor at the end and the read cursor at 0; the arguments' cursors and byte orders are not carried over, and the arguments are not modified. Empty arguments contribute nothing, and the same object may appear more than once. A single `data` argument uses the normal copy constructor.
+
+```cpp
+data l_header("HDR:");
+data l_body("payload");
+data l_msg(l_header, l_body, l_header);   // "HDR:payloadHDR:"
+```
+
 #### `~data()`
 Destroys the instance and its buffer.
 
@@ -374,6 +383,6 @@ data restored = base64::decode(text);          // restored.bytes() == original.b
 
 ## Tests
 
-`main.cc` contains the test cases, in twelve functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_random_tests()` (random bytes), `run_circular_tests()` (circular reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding), `run_base64_tests()` (base64) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
+`main.cc` contains the test cases, in thirteen functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_random_tests()` (random bytes), `run_circular_tests()` (circular reads), `run_concat_tests()` (concatenating constructor), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding), `run_base64_tests()` (base64) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
 
 `run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with each of `rle`, `huffman` and `lzma`, and with `rle` followed by `huffman` or by `lzma` (the RLE output is compressed again). It prints a table of input size and, for each of these five,  the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through every combination (the two chained ones are undone in reverse order). Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.
