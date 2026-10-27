@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -687,6 +689,63 @@ static void run_lzma_tests()
 	check(l_rejects(l_bad), "lzma: nonzero first range coder byte is rejected");
 }
 
+// compresses every regular file in a directory with both coders, verifies each round trip and prints a comparison table
+static void run_comp_dir_tests(const char *a_dir)
+{
+	namespace fs = std::filesystem;
+
+	std::vector<fs::path> l_files;
+	std::error_code l_ec;
+	for (fs::directory_iterator l_it(a_dir, l_ec), l_end; !l_ec && l_it != l_end; l_it.increment(l_ec)) {
+		if (l_it->is_regular_file())
+			l_files.push_back(l_it->path());
+	}
+	if (l_ec || l_files.empty()) {
+		std::cout << "SKIP: no files found in " << a_dir << std::endl;
+		return;
+	}
+	std::sort(l_files.begin(), l_files.end());
+
+	struct result {
+		std::string name;
+		size_t in, huff, lzma;
+		bool huff_ok, lzma_ok;
+	};
+	std::vector<result> l_results;
+	for (const fs::path& l_path : l_files) {
+		data l_src;
+		l_src.load_file(l_path.string());
+		data l_huff = huffman::compress(l_src);
+		data l_lzma = lzma::compress(l_src);
+		l_results.push_back({ l_path.filename().string(), l_src.size(), l_huff.size(), l_lzma.size(),
+			huffman::decompress(l_huff).bytes() == l_src.bytes(), lzma::decompress(l_lzma).bytes() == l_src.bytes() });
+	}
+
+	// packed size, percentage of input and ratio input:packed
+	auto l_cols = [](size_t a_in, size_t a_packed) {
+		char l_buf[64];
+		std::snprintf(l_buf, sizeof(l_buf), "%10zu %6.1f%% %6.2f:1", a_packed,
+			a_in ? 100.0 * a_packed / a_in : 0.0, a_packed ? static_cast<double>(a_in) / a_packed : 0.0);
+		return std::string(l_buf);
+	};
+
+	std::cout << "compression of files in " << a_dir << ":" << std::endl;
+	std::printf("  %-20s %10s | %10s %7s %8s | %10s %7s %8s\n", "file", "input", "huffman", "%", "ratio", "lzma", "%", "ratio");
+	size_t l_total_in = 0, l_total_huff = 0, l_total_lzma = 0;
+	for (const result& l_r : l_results) {
+		std::printf("  %-20s %10zu | %s | %s\n", l_r.name.c_str(), l_r.in, l_cols(l_r.in, l_r.huff).c_str(), l_cols(l_r.in, l_r.lzma).c_str());
+		l_total_in += l_r.in;
+		l_total_huff += l_r.huff;
+		l_total_lzma += l_r.lzma;
+	}
+	std::printf("  %-20s %10zu | %s | %s\n", "total", l_total_in, l_cols(l_total_in, l_total_huff).c_str(), l_cols(l_total_in, l_total_lzma).c_str());
+
+	for (const result& l_r : l_results) {
+		check(l_r.huff_ok, ("comp dir: huffman round trips " + l_r.name).c_str());
+		check(l_r.lzma_ok, ("comp dir: lzma round trips " + l_r.name).c_str());
+	}
+}
+
 static void run_file_tests()
 {
 	const std::string l_path = "data-ssai-test.tmp";
@@ -738,6 +797,7 @@ int main(int, char **)
 	run_file_tests();
 	run_huffman_tests();
 	run_lzma_tests();
+	run_comp_dir_tests("comp_test_cases");
 	std::cout << (g_failures ? "tests FAILED" : "all tests passed") << std::endl;
 	personal_tests();
 	return g_failures ? 1 : 0;
