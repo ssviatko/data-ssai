@@ -8,6 +8,7 @@
 #include "data.h"
 #include "huffman.h"
 #include "lzma.h"
+#include "rle.h"
 
 static int g_failures = 0;
 
@@ -689,7 +690,132 @@ static void run_lzma_tests()
 	check(l_rejects(l_bad), "lzma: nonzero first range coder byte is rejected");
 }
 
-// compresses every regular file in a directory with both coders, verifies each round trip and prints a comparison table
+static bool rle_round_trip(const char *a_label, const data& a_src)
+{
+	data l_packed = rle::compress(a_src);
+	report_compression(a_label, a_src.size(), l_packed.size());
+	data l_back = rle::decompress(l_packed);
+	return l_back.bytes() == a_src.bytes();
+}
+
+static void run_rle_tests()
+{
+	// empty: just the 8 byte size header
+	data l_empty;
+	check(rle::compress(l_empty).size() == 8, "rle: empty data compresses to the 8 byte header");
+	check(rle_round_trip("empty", l_empty), "rle: empty data round trips");
+
+	// exact encoding: a run of 3 'a', then 3 literals
+	data l_fmt(std::string("aaabcd"));
+	data l_fmt_packed = rle::compress(l_fmt);
+	const uint8_t l_expect[] = { 0, 0, 0, 0, 0, 0, 0, 6, 0x81, 'a', 0x02, 'b', 'c', 'd' };
+	check(l_fmt_packed.bytes() == std::vector<uint8_t>(l_expect, l_expect + sizeof(l_expect)), "rle: encoding of \"aaabcd\" is as documented");
+
+	// a run of 2 is not worth a run packet; a run of 129 is the longest single packet
+	data l_two(std::string("aabaa"));
+	check(rle::compress(l_two).size() == 8 + 1 + 5, "rle: runs of 2 stay in the literal packet");
+	check(rle::compress(data(std::string(129, 'r'))).size() == 8 + 2, "rle: 129 equal bytes take one run packet");
+	check(rle::compress(data(std::string(130, 'r'))).size() == 8 + 2 + 2, "rle: 130 equal bytes take two run packets");
+
+	// single byte, long run
+	data l_one;
+	l_one.append_uint8(0x42);
+	check(rle_round_trip("single byte", l_one), "rle: single byte round trips");
+	data l_run(std::string(100000, 'x'));
+	check(rle_round_trip("run of 100000 x", l_run), "rle: long run round trips");
+	check(rle::compress(l_run).size() < 8 + 100000 / 129 * 2 + 4, "rle: long run takes two bytes per 129");
+
+	// every run length around the packet boundaries, between literals
+	bool l_ok = true;
+	const size_t l_lens[] = { 1, 2, 3, 4, 127, 128, 129, 130, 131, 257, 258, 259, 260, 387, 388 };
+	for (size_t l_len : l_lens) {
+		data l_d(std::string("<") + std::string(l_len, 'z') + ">" + std::string(l_len, 'y'));
+		l_ok = l_ok && rle::decompress(rle::compress(l_d)).bytes() == l_d.bytes();
+	}
+	check(l_ok, "rle: run lengths around packet boundaries round trip");
+
+	// literal packets: 128 is the most in one packet
+	data l_lit128;
+	for (int i = 0; i < 128; i++)
+		l_lit128.append_uint8(static_cast<uint8_t>(i));
+	check(rle::compress(l_lit128).size() == 8 + 1 + 128, "rle: 128 literals take one literal packet");
+	check(rle_round_trip("128 distinct bytes", l_lit128), "rle: 128 literals round trip");
+	data l_lit129;
+	for (int i = 0; i < 129; i++)
+		l_lit129.append_uint8(static_cast<uint8_t>(i));
+	check(rle::compress(l_lit129).size() == 8 + 1 + 128 + 1 + 1, "rle: 129 literals take two literal packets");
+	check(rle_round_trip("129 distinct bytes", l_lit129), "rle: 129 literals round trip");
+
+	// two values, alternating runs and literals
+	check(rle_round_trip("two values", data(std::string("abababbbbaaab"))), "rle: two distinct values round trip");
+	data l_mix;
+	for (int i = 0; i < 300; i++) {
+		l_mix.append_uint8(static_cast<uint8_t>(i));
+		for (int j = 0; j < i % 9; j++)
+			l_mix.append_uint8(0xff);
+	}
+	check(rle_round_trip("literals and runs mixed", l_mix), "rle: mixed literals and runs round trip");
+
+	// no runs: grows by one control byte per 128 bytes
+	data l_all;
+	for (int i = 0; i < 256 * 4; i++)
+		l_all.append_uint8(static_cast<uint8_t>(i));
+	check(rle_round_trip("all byte values", l_all), "rle: all byte values round trip");
+	check(rle::compress(l_all).size() == 8 + 1024 + 1024 / 128, "rle: data without runs grows by 1/128");
+	data l_rnd = make_random(10000, 12345);
+	check(rle_round_trip("random bytes", l_rnd), "rle: random bytes round trip");
+	check(rle::compress(l_rnd).size() <= 8 + 10000 + 10000 / 128 + 1, "rle: random bytes grow by under 1%");
+
+	// text and a bitmap-like image with long runs
+	std::string l_text;
+	for (int i = 0; i < 200; i++)
+		l_text += "the quick brown fox jumps over the lazy dog. ";
+	check(rle_round_trip("text", data(l_text)), "rle: text round trips");
+	data l_img;
+	for (int l_row = 0; l_row < 64; l_row++) {
+		for (int l_col = 0; l_col < 64; l_col++)
+			l_img.append_uint8((l_row / 8 + l_col / 32) % 2 ? 0xff : 0x00);
+	}
+	check(rle_round_trip("bitmap with large flat areas", l_img), "rle: bitmap round trips");
+	check(rle::compress(l_img).size() < l_img.size() / 10, "rle: bitmap with large flat areas shrinks below 10%");
+
+	// input is not modified, and its byte order and cursors do not matter
+	data l_in(std::string("hello rle rle rle rle rle  hello"));
+	l_in.set_byte_order(data::HOST_ORDER);
+	l_in.set_read_cursor(5);
+	std::vector<uint8_t> l_before = l_in.bytes();
+	data l_out = rle::compress(l_in);
+	check(l_in.bytes() == l_before && l_in.get_read_cursor() == 5, "rle: compress leaves input unchanged");
+	l_out.set_byte_order(data::HOST_ORDER);
+	l_out.set_read_cursor(3);
+	check(rle::decompress(l_out).bytes() == l_before, "rle: decompress ignores input byte order and cursor");
+
+	// corrupt input
+	auto l_rejects = [](const std::vector<uint8_t>& a_bad) {
+		try { rle::decompress(data(a_bad.data(), a_bad.size())); } catch (const std::runtime_error&) { return true; }
+		return false;
+	};
+	std::vector<uint8_t> l_good = l_fmt_packed.bytes();	// "aaabcd"
+	check(l_rejects(std::vector<uint8_t>()), "rle: empty input is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.begin() + 7)), "rle: truncated header is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.end() - 1)), "rle: truncated literal packet is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.begin() + 9)), "rle: truncated run packet is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.begin() + 8)), "rle: missing packets are rejected");
+	std::vector<uint8_t> l_bad = l_good;
+	l_bad.push_back(0);
+	check(l_rejects(l_bad), "rle: trailing data is rejected");
+	l_bad = l_good;
+	l_bad[7] = 5;	// declared size is smaller than what the packets produce
+	check(l_rejects(l_bad), "rle: packets running past the declared size are rejected");
+	l_bad = l_good;
+	l_bad[7] = 7;	// declared size is larger than what the packets produce
+	check(l_rejects(l_bad), "rle: packets ending before the declared size are rejected");
+	l_bad = l_good;
+	l_bad[0] = 0x10;	// 2^60 bytes cannot come from 6 bytes of packets
+	check(l_rejects(l_bad), "rle: impossible declared size is rejected");
+}
+
+// compresses every regular file in a directory with each coder and with RLE followed by Huffman or LZMA, verifies each round trip and prints a comparison table
 static void run_comp_dir_tests(const char *a_dir)
 {
 	namespace fs = std::filesystem;
@@ -708,17 +834,24 @@ static void run_comp_dir_tests(const char *a_dir)
 
 	struct result {
 		std::string name;
-		size_t in, huff, lzma;
-		bool huff_ok, lzma_ok;
+		size_t in, rle, huff, lzma, rle_huff, rle_lzma;
+		bool rle_ok, huff_ok, lzma_ok, rle_huff_ok, rle_lzma_ok;
 	};
 	std::vector<result> l_results;
 	for (const fs::path& l_path : l_files) {
 		data l_src;
 		l_src.load_file(l_path.string());
+		data l_rle = rle::compress(l_src);
 		data l_huff = huffman::compress(l_src);
 		data l_lzma = lzma::compress(l_src);
-		l_results.push_back({ l_path.filename().string(), l_src.size(), l_huff.size(), l_lzma.size(),
-			huffman::decompress(l_huff).bytes() == l_src.bytes(), lzma::decompress(l_lzma).bytes() == l_src.bytes() });
+		data l_rle_huff = huffman::compress(l_rle);
+		data l_rle_lzma = lzma::compress(l_rle);
+		l_results.push_back({ l_path.filename().string(), l_src.size(), l_rle.size(), l_huff.size(), l_lzma.size(),
+			l_rle_huff.size(), l_rle_lzma.size(),
+			rle::decompress(l_rle).bytes() == l_src.bytes(), huffman::decompress(l_huff).bytes() == l_src.bytes(),
+			lzma::decompress(l_lzma).bytes() == l_src.bytes(),
+			rle::decompress(huffman::decompress(l_rle_huff)).bytes() == l_src.bytes(),
+			rle::decompress(lzma::decompress(l_rle_lzma)).bytes() == l_src.bytes() });
 	}
 
 	// packed size, percentage of input and ratio input:packed
@@ -730,19 +863,30 @@ static void run_comp_dir_tests(const char *a_dir)
 	};
 
 	std::cout << "compression of files in " << a_dir << ":" << std::endl;
-	std::printf("  %-20s %10s | %10s %7s %8s | %10s %7s %8s\n", "file", "input", "huffman", "%", "ratio", "lzma", "%", "ratio");
-	size_t l_total_in = 0, l_total_huff = 0, l_total_lzma = 0;
+	std::printf("  %-20s %10s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s\n", "file", "input",
+		"rle", "%", "ratio", "huffman", "%", "ratio", "lzma", "%", "ratio", "rle+huffman", "%", "ratio", "rle+lzma", "%", "ratio");
+	size_t l_total_in = 0, l_total_rle = 0, l_total_huff = 0, l_total_lzma = 0, l_total_rle_huff = 0, l_total_rle_lzma = 0;
 	for (const result& l_r : l_results) {
-		std::printf("  %-20s %10zu | %s | %s\n", l_r.name.c_str(), l_r.in, l_cols(l_r.in, l_r.huff).c_str(), l_cols(l_r.in, l_r.lzma).c_str());
+		std::printf("  %-20s %10zu | %s | %s | %s | %s | %s\n", l_r.name.c_str(), l_r.in, l_cols(l_r.in, l_r.rle).c_str(),
+			l_cols(l_r.in, l_r.huff).c_str(), l_cols(l_r.in, l_r.lzma).c_str(),
+			l_cols(l_r.in, l_r.rle_huff).c_str(), l_cols(l_r.in, l_r.rle_lzma).c_str());
 		l_total_in += l_r.in;
+		l_total_rle += l_r.rle;
+		l_total_rle_huff += l_r.rle_huff;
+		l_total_rle_lzma += l_r.rle_lzma;
 		l_total_huff += l_r.huff;
 		l_total_lzma += l_r.lzma;
 	}
-	std::printf("  %-20s %10zu | %s | %s\n", "total", l_total_in, l_cols(l_total_in, l_total_huff).c_str(), l_cols(l_total_in, l_total_lzma).c_str());
+	std::printf("  %-20s %10zu | %s | %s | %s | %s | %s\n", "total", l_total_in, l_cols(l_total_in, l_total_rle).c_str(),
+		l_cols(l_total_in, l_total_huff).c_str(), l_cols(l_total_in, l_total_lzma).c_str(),
+		l_cols(l_total_in, l_total_rle_huff).c_str(), l_cols(l_total_in, l_total_rle_lzma).c_str());
 
 	for (const result& l_r : l_results) {
+		check(l_r.rle_ok, ("comp dir: rle round trips " + l_r.name).c_str());
 		check(l_r.huff_ok, ("comp dir: huffman round trips " + l_r.name).c_str());
 		check(l_r.lzma_ok, ("comp dir: lzma round trips " + l_r.name).c_str());
+		check(l_r.rle_huff_ok, ("comp dir: rle+huffman round trips " + l_r.name).c_str());
+		check(l_r.rle_lzma_ok, ("comp dir: rle+lzma round trips " + l_r.name).c_str());
 	}
 }
 
@@ -797,6 +941,7 @@ int main(int, char **)
 	run_file_tests();
 	run_huffman_tests();
 	run_lzma_tests();
+	run_rle_tests();
 	run_comp_dir_tests("comp_test_cases");
 	std::cout << (g_failures ? "tests FAILED" : "all tests passed") << std::endl;
 	personal_tests();

@@ -246,6 +246,32 @@ The compressed data is always in network byte order:
 
 The decoder rebuilds the same code tree from the frequency table, with ties broken deterministically. The table costs a few hundred bytes at most, so very small inputs can come out larger than they went in. Only byte frequencies are used, so data with no skew (random bytes) does not shrink.
 
+## Run length encoding
+
+`rle.h` and `rle.cc` compress the bytes of a `data` object with run length encoding, with the same interface as the other two coders.
+
+#### `static data rle::compress(const data& a_in)`
+Returns a new `data` holding the compressed form of the bytes in `a_in`. The input is not modified. Its byte order and cursors are ignored.
+
+#### `static data rle::decompress(const data& a_in)`
+Returns a new `data` holding the original bytes. Throws `std::runtime_error` if `a_in` is not valid output of `compress` (truncated header or packet, packets that produce more or fewer bytes than the declared size, trailing data, or a declared size the stream could not possibly produce). The input's byte order and cursors are ignored.
+
+```cpp
+#include "rle.h"
+
+data packed = rle::compress(original);
+data restored = rle::decompress(packed);   // restored.bytes() == original.bytes()
+```
+
+The compressed data is always in network byte order: an 8 byte original size, then packets that each start with a control byte `c`:
+
+| Control byte | Meaning |
+|---|---|
+| 0 to 127 | Literal packet. The next `c + 1` bytes are copied as they are. |
+| 128 to 255 | Run packet. The next byte is repeated `c - 126` times (2 to 129). |
+
+The encoder only writes a run packet for 3 or more equal bytes, since a run of 2 is no smaller than two literals and would split the surrounding literal packet. Data with no runs grows by one control byte per 128 bytes (under 1%) plus the header, so unlike the other coders RLE never expands data badly, but it only helps where long runs of equal bytes occur, such as flat areas in bitmaps. Ordinary text and object code have few runs and barely shrink.
+
 ## LZMA compression
 
 `lzma.h` and `lzma.cc` compress the bytes of a `data` object with LZMA. It is written from scratch (range coder, hash-chain match finder and the LZMA literal/match/repeat model), with no external library. The interface mirrors the Huffman class.
@@ -288,6 +314,6 @@ The encoder uses a greedy parse: a repeat of one of the last four match distance
 
 ## Tests
 
-`main.cc` contains the test cases, in eight functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
+`main.cc` contains the test cases, in nine functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
 
-`run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with both `huffman` and `lzma`. It prints a table of input size and, for each coder, the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through both coders. Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.
+`run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with each of `rle`, `huffman` and `lzma`, and with `rle` followed by `huffman` or by `lzma` (the RLE output is compressed again). It prints a table of input size and, for each of these five,  the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through every combination (the two chained ones are undone in reverse order). Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.
