@@ -72,6 +72,22 @@ public:
 	long double read_long_double();
 	std::string read_string();	// throws, leaving the cursor unmoved, if the prefix or body is truncated
 
+	// circular read: for using the data as a first-in first-out queue. Each of these reads from
+	// position 0 whatever the read cursor is, removes the bytes it read from the front of the buffer
+	// and leaves the read cursor at 0. The write cursor moves back by the number of bytes removed
+	// (to 0 at the lowest) so it keeps pointing at the same data. If the read throws, nothing changes.
+	// Removing from the front moves the remaining bytes, so the cost grows with size().
+	void circular_read(uint8_t *a_bytes, size_t a_len);
+	uint8_t circular_read_uint8();
+	uint16_t circular_read_uint16();
+	uint32_t circular_read_uint32();
+	uint64_t circular_read_uint64();
+	uint64_t circular_read_arbitrary(unsigned a_bits);	// a_bits: multiple of 8, 8 to 64; throws std::invalid_argument otherwise
+	float circular_read_float();
+	double circular_read_double();
+	long double circular_read_long_double();
+	std::string circular_read_string();
+
 	// file I/O: the whole buffer, raw bytes, independent of byte order
 	void save_file(const std::string& a_path) const;	// writes all bytes, truncating any existing file; throws std::runtime_error on failure
 	void load_file(const std::string& a_path);	// replaces the data with the file's contents, write cursor at the end, read cursor at 0; throws std::runtime_error, leaving the data unchanged, on failure
@@ -82,6 +98,19 @@ public:
 	const std::vector<uint8_t>& bytes() const;
 
 private:
+	// brackets a circular read: moves the read cursor to 0, then either commit() removes what was
+	// read or, if the read threw, the destructor puts the read cursor back
+	class circular_scope {
+	public:
+		explicit circular_scope(data& a_data);
+		~circular_scope();
+		void commit();
+	private:
+		data& m_data;
+		size_t m_saved;
+		bool m_committed = false;
+	};
+
 	void store(const uint8_t *a_src, size_t a_len, size_t a_pos);
 	static size_t int_width(unsigned a_bits);
 	static void check_fits(uint64_t a_val, size_t a_width);

@@ -890,6 +890,105 @@ static void run_comp_dir_tests(const char *a_dir)
 	}
 }
 
+static void run_circular_tests()
+{
+	// every type, in order, consumed from the front
+	data l_d;
+	l_d.append_uint8(0xab);
+	l_d.append_uint16(0x1234);
+	l_d.append_uint32(0xdeadbeef);
+	l_d.append_uint64(0x0102030405060708ULL);
+	l_d.append_arbitrary(0xabcdef, 24);
+	l_d.append_arbitrary(0x1122334455ULL, 40);
+	l_d.append_float(1.5f);
+	l_d.append_double(-2.25);
+	l_d.append_long_double(3.125L);
+	l_d.append_string("queue");
+	l_d.append_uint8(0x77);
+	size_t l_total = l_d.size();
+
+	l_d.set_read_cursor(5);	// must be ignored
+	check(l_d.circular_read_uint8() == 0xab, "circular_read_uint8 reads from position 0 ignoring the read cursor");
+	check(l_d.size() == l_total - 1 && l_d.get_read_cursor() == 0, "circular_read_uint8 removes 1 byte and resets the read cursor");
+	check(l_d.circular_read_uint16() == 0x1234 && l_d.size() == l_total - 3, "circular_read_uint16");
+	check(l_d.circular_read_uint32() == 0xdeadbeef && l_d.size() == l_total - 7, "circular_read_uint32");
+	check(l_d.circular_read_uint64() == 0x0102030405060708ULL && l_d.size() == l_total - 15, "circular_read_uint64");
+	check(l_d.circular_read_arbitrary(24) == 0xabcdef && l_d.size() == l_total - 18, "circular_read_arbitrary 24 bits");
+	check(l_d.circular_read_arbitrary(40) == 0x1122334455ULL && l_d.size() == l_total - 23, "circular_read_arbitrary 40 bits");
+	check(l_d.circular_read_float() == 1.5f && l_d.size() == l_total - 27, "circular_read_float");
+	check(l_d.circular_read_double() == -2.25 && l_d.size() == l_total - 35, "circular_read_double");
+	check(l_d.circular_read_long_double() == 3.125L && l_d.size() == l_total - 45, "circular_read_long_double removes 10 bytes");
+	check(l_d.circular_read_string() == "queue" && l_d.size() == l_total - 54, "circular_read_string removes prefix and body");
+	check(l_d.size() == 1 && l_d.bytes()[0] == 0x77 && l_d.get_read_cursor() == 0, "unread bytes remain at the front");
+
+	// raw bytes
+	data l_raw(std::string("abcdef"));
+	uint8_t l_buf[4];
+	l_raw.circular_read(l_buf, 4);
+	check(std::string(l_buf, l_buf + 4) == "abcd" && l_raw.size() == 2 && l_raw.bytes()[0] == 'e', "circular_read copies and removes raw bytes");
+
+	// first in first out: append at the end, circular read from the front
+	data l_q;
+	for (uint32_t i = 0; i < 5; i++)
+		l_q.append_uint32(i * 1000);
+	bool l_fifo = true;
+	for (uint32_t i = 0; i < 5; i++) {
+		l_fifo = l_fifo && l_q.circular_read_uint32() == i * 1000;
+		l_q.append_uint32(100 + i);	// refill while draining
+	}
+	for (uint32_t i = 0; i < 5; i++)
+		l_fifo = l_fifo && l_q.circular_read_uint32() == 100 + i;
+	check(l_fifo && l_q.size() == 0, "circular reads and appends behave as a queue");
+
+	// byte order applies
+	data l_h;
+	l_h.set_byte_order(data::HOST_ORDER);
+	l_h.append_uint16(0x0102);
+	l_h.append_uint16(0x0304);
+	check(l_h.circular_read_uint16() == 0x0102 && l_h.circular_read_uint16() == 0x0304, "circular reads use the current byte order");
+
+	// cursors: the write cursor keeps pointing at the same data
+	data l_c;
+	l_c.append_uint32(1);
+	l_c.append_uint32(2);
+	l_c.append_uint32(3);
+	l_c.set_write_cursor(8);	// at the third value
+	l_c.circular_read_uint32();
+	check(l_c.get_write_cursor() == 4, "write cursor moves back by the bytes removed");
+	l_c.write_uint32(30);
+	check(l_c.circular_read_uint32() == 2 && l_c.circular_read_uint32() == 30, "write after a circular read lands on the same data");
+	data l_c2;
+	l_c2.append_uint32(1);
+	l_c2.append_uint32(2);
+	l_c2.set_write_cursor(2);
+	l_c2.circular_read_uint32();
+	check(l_c2.get_write_cursor() == 0, "write cursor stops at 0");
+
+	// failures change nothing, including the read cursor
+	auto l_throws = [](auto a_fn) {
+		try { a_fn(); } catch (const std::out_of_range&) { return true; } catch (const std::invalid_argument&) { return true; }
+		return false;
+	};
+	data l_e;
+	l_e.append_uint8(1);
+	l_e.append_uint8(2);
+	l_e.append_uint8(3);
+	l_e.set_read_cursor(2);
+	std::vector<uint8_t> l_before = l_e.bytes();
+	check(l_throws([&] { l_e.circular_read_uint32(); }), "circular_read_uint32 past the end throws");
+	check(l_throws([&] { l_e.circular_read_arbitrary(12); }), "circular_read_arbitrary rejects a bad width");
+	check(l_throws([&] { l_e.circular_read_arbitrary(64); }), "circular_read_arbitrary past the end throws");
+	check(l_throws([&] { l_e.circular_read_double(); }), "circular_read_double past the end throws");
+	check(l_throws([&] { l_e.circular_read_string(); }), "circular_read_string on a truncated prefix throws");
+	check(l_e.bytes() == l_before && l_e.get_read_cursor() == 2 && l_e.get_write_cursor() == 3, "failed circular reads leave data and cursors unchanged");
+	data l_s;
+	l_s.append_uint32(50);	// string claims 50 bytes, none follow
+	check(l_throws([&] { l_s.circular_read_string(); }) && l_s.size() == 4, "circular_read_string with a truncated body leaves data unchanged");
+	check(l_throws([&] { l_s.circular_read(l_buf, 5); }) && l_s.size() == 4, "circular_read past the end leaves data unchanged");
+	data l_empty;
+	check(l_throws([&] { l_empty.circular_read_uint8(); }), "circular read from empty data throws");
+}
+
 static void run_file_tests()
 {
 	const std::string l_path = "data-ssai-test.tmp";
@@ -938,6 +1037,7 @@ int main(int, char **)
 	run_cursor_tests();
 	run_string_tests();
 	run_arbitrary_tests();
+	run_circular_tests();
 	run_file_tests();
 	run_huffman_tests();
 	run_lzma_tests();

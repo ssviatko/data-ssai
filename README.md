@@ -188,6 +188,33 @@ Read 4, 8 or 10 bytes respectively and reconstruct the value. `read_long_double`
 #### `std::string read_string()`
 Reads a `uint32` length prefix, then that many bytes. Throws `std::out_of_range` if either the prefix or the body is truncated, and leaves the read cursor where it started.
 
+### Circular read
+
+These let a `data` act as a first-in first-out queue: append at the end, consume from the front. Each circular read ignores the read cursor and reads from position 0, removes the bytes it read from the front of the buffer, and leaves the read cursor at 0. Values are decoded exactly as by the matching `read_*` method, using the current byte order.
+
+The write cursor moves back by the number of bytes removed (stopping at 0), so it keeps pointing at the same data. If a read throws, nothing changes: the buffer, the read cursor and the write cursor stay as they were. Removing from the front moves the remaining bytes, so each call costs time proportional to `size()`.
+
+#### `void circular_read(uint8_t *a_bytes, size_t a_len)`
+#### `uint8_t circular_read_uint8()`
+#### `uint16_t circular_read_uint16()`
+#### `uint32_t circular_read_uint32()`
+#### `uint64_t circular_read_uint64()`
+#### `uint64_t circular_read_arbitrary(unsigned a_bits)`
+#### `float circular_read_float()`
+#### `double circular_read_double()`
+#### `long double circular_read_long_double()`
+#### `std::string circular_read_string()`
+Each behaves like the `read_*` method of the same name (raw bytes, 1, 2, 4 or 8 byte integers, an `a_bits` wide integer, floating point values and a length-prefixed string), including its exceptions: `std::out_of_range` if too few bytes are available and `std::invalid_argument` for a bad `a_bits`.
+
+```cpp
+data q;
+q.append_uint32(1);
+q.append_uint32(2);
+q.circular_read_uint32();   // 1; the buffer now holds just the 2
+q.append_uint32(3);
+q.circular_read_uint32();   // 2
+```
+
 ### File I/O
 
 These operate on the whole buffer as raw bytes, so byte order does not apply.
@@ -314,6 +341,6 @@ The encoder uses a greedy parse: a repeat of one of the last four match distance
 
 ## Tests
 
-`main.cc` contains the test cases, in nine functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
+`main.cc` contains the test cases, in ten functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_circular_tests()` (circular reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
 
 `run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with each of `rle`, `huffman` and `lzma`, and with `rle` followed by `huffman` or by `lzma` (the RLE output is compressed again). It prints a table of input size and, for each of these five,  the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through every combination (the two chained ones are undone in reverse order). Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.

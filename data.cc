@@ -360,6 +360,108 @@ std::string data::read_string()
 	return l_val;
 }
 
+// ---- circular read ----
+
+data::circular_scope::circular_scope(data& a_data)
+	: m_data(a_data), m_saved(a_data.m_rcursor)
+{
+	m_data.m_rcursor = 0;
+}
+
+data::circular_scope::~circular_scope()
+{
+	if (!m_committed)
+		m_data.m_rcursor = m_saved;
+}
+
+void data::circular_scope::commit()
+{
+	size_t l_used = m_data.m_rcursor;
+	m_data.m_bytes.erase(m_data.m_bytes.begin(), m_data.m_bytes.begin() + l_used);
+	m_data.m_wcursor = m_data.m_wcursor > l_used ? m_data.m_wcursor - l_used : 0;
+	m_data.m_rcursor = 0;
+	m_committed = true;
+}
+
+void data::circular_read(uint8_t *a_bytes, size_t a_len)
+{
+	circular_scope l_scope(*this);
+	read(a_bytes, a_len);
+	l_scope.commit();
+}
+
+uint8_t data::circular_read_uint8()
+{
+	circular_scope l_scope(*this);
+	uint8_t l_val = read_uint8();
+	l_scope.commit();
+	return l_val;
+}
+
+uint16_t data::circular_read_uint16()
+{
+	circular_scope l_scope(*this);
+	uint16_t l_val = read_uint16();
+	l_scope.commit();
+	return l_val;
+}
+
+uint32_t data::circular_read_uint32()
+{
+	circular_scope l_scope(*this);
+	uint32_t l_val = read_uint32();
+	l_scope.commit();
+	return l_val;
+}
+
+uint64_t data::circular_read_uint64()
+{
+	circular_scope l_scope(*this);
+	uint64_t l_val = read_uint64();
+	l_scope.commit();
+	return l_val;
+}
+
+uint64_t data::circular_read_arbitrary(unsigned a_bits)
+{
+	circular_scope l_scope(*this);
+	uint64_t l_val = read_arbitrary(a_bits);
+	l_scope.commit();
+	return l_val;
+}
+
+float data::circular_read_float()
+{
+	circular_scope l_scope(*this);
+	float l_val = read_float();
+	l_scope.commit();
+	return l_val;
+}
+
+double data::circular_read_double()
+{
+	circular_scope l_scope(*this);
+	double l_val = read_double();
+	l_scope.commit();
+	return l_val;
+}
+
+long double data::circular_read_long_double()
+{
+	circular_scope l_scope(*this);
+	long double l_val = read_long_double();
+	l_scope.commit();
+	return l_val;
+}
+
+std::string data::circular_read_string()
+{
+	circular_scope l_scope(*this);
+	std::string l_val = read_string();
+	l_scope.commit();
+	return l_val;
+}
+
 // ---- misc ----
 
 void data::display(std::ostream& a_os) const
