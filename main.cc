@@ -9,6 +9,7 @@
 #include "data.h"
 #include "huffman.h"
 #include "lzma.h"
+#include "lzw.h"
 #include "rle.h"
 
 static int g_failures = 0;
@@ -691,6 +692,127 @@ static void run_lzma_tests()
 	check(l_rejects(l_bad), "lzma: nonzero first range coder byte is rejected");
 }
 
+static bool lzw_round_trip(const char *a_label, const data& a_src)
+{
+	data l_packed = lzw::compress(a_src);
+	report_compression(a_label, a_src.size(), l_packed.size());
+	data l_back = lzw::decompress(l_packed);
+	return l_back.bytes() == a_src.bytes();
+}
+
+static void run_lzw_tests()
+{
+	// empty: just the 8 byte size
+	data l_empty;
+	check(lzw::compress(l_empty).size() == 8, "lzw: empty data compresses to the header only");
+	check(lzw_round_trip("empty", l_empty), "lzw: empty data round trips");
+
+	// single byte: header plus one 9 bit code, padded
+	data l_one;
+	l_one.append_uint8(0x42);
+	data l_one_packed = lzw::compress(l_one);
+	check(l_one_packed.size() == 10, "lzw: single byte is header plus two bytes");
+	check(l_one_packed.bytes()[7] == 1 && l_one_packed.bytes()[8] == 0x21 && l_one_packed.bytes()[9] == 0x00, "lzw: size is big endian and the code is packed msb first");
+	check(lzw_round_trip("single byte", l_one), "lzw: single byte round trips");
+
+	// the classic example; codes are 84 79 66 69 79 82 78 79 84 257 259 261 266 260 262 264, 9 bits each
+	data l_tobe(std::string("TOBEORNOTTOBEORTOBEORNOT"));
+	data l_tobe_packed = lzw::compress(l_tobe);
+	check(l_tobe_packed.size() == 8 + 18, "lzw: classic example codes to 16 nine bit codes");
+	check(l_tobe_packed.bytes()[7] == 24 && l_tobe_packed.bytes()[8] == 0x2a && l_tobe_packed.bytes()[9] == 0x13, "lzw: classic example starts with T and O");
+	check(lzw_round_trip("classic example", l_tobe), "lzw: classic example round trips");
+
+	// runs exercise the code that is used just as it is defined
+	data l_run(std::string(100000, 'x'));
+	check(lzw_round_trip("run of 100000 x", l_run), "lzw: long run round trips");
+	check(lzw::compress(l_run).size() < 1000, "lzw: long run is small");
+	data l_two(std::string("abababbbbaaab"));
+	check(lzw_round_trip("two values", l_two), "lzw: two distinct values round trip");
+
+	// text
+	std::string l_text;
+	for (int i = 0; i < 200; i++)
+		l_text += "the quick brown fox jumps over the lazy dog. ";
+	data l_txt(l_text);
+	data l_txt_packed = lzw::compress(l_txt);
+	report_compression("repetitive text", l_txt.size(), l_txt_packed.size());
+	check(l_txt_packed.size() < l_txt.size() / 4, "lzw: repetitive text shrinks below a quarter");
+	check(lzw::decompress(l_txt_packed).bytes() == l_txt.bytes(), "lzw: text round trips");
+
+	std::string l_prose;
+	const char *l_words[] = { "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa" };
+	uint32_t l_seed = 99;
+	for (int i = 0; i < 4000; i++) {
+		l_seed = l_seed * 1664525u + 1013904223u;
+		l_prose += l_words[(l_seed >> 24) % 10];
+		l_prose += (l_seed >> 16) % 7 == 0 ? ". " : " ";
+	}
+	data l_pro(l_prose);
+	check(lzw_round_trip("word salad", l_pro), "lzw: word salad round trips");
+	check(lzw::compress(l_pro).size() < l_pro.size() / 3, "lzw: word salad shrinks below a third");
+
+	// all byte values, skewed data, random bytes
+	data l_all;
+	for (int i = 0; i < 256 * 4; i++)
+		l_all.append_uint8(static_cast<uint8_t>(i));
+	check(lzw_round_trip("all byte values", l_all), "lzw: all byte values round trip");
+
+	data l_skew;
+	for (int i = 0; i < 5000; i++)
+		l_skew.append_uint8(i % 50 == 0 ? static_cast<uint8_t>(i / 50) : 0);
+	check(lzw_round_trip("skewed data", l_skew), "lzw: skewed data round trips");
+
+	data l_rnd = make_random(10000, 12345);
+	check(lzw_round_trip("random bytes", l_rnd), "lzw: random bytes round trip");
+
+	// enough data to grow the codes to 16 bits and fill the dictionary, forcing clear codes
+	data l_big = make_random(400000, 2024);
+	check(lzw_round_trip("random bytes (dictionary fills)", l_big), "lzw: dictionary overflow with random bytes round trips");
+	data l_big_txt;
+	for (int i = 0; i < 300; i++)
+		l_big_txt.append(l_pro.bytes().data(), l_pro.size());
+	check(lzw_round_trip("repeated word salad (dictionary fills)", l_big_txt), "lzw: dictionary overflow with text round trips");
+	check(lzw::compress(l_big_txt).size() < l_big_txt.size() / 4, "lzw: text keeps shrinking after the dictionary resets");
+
+	// compress and decompress this project's own sources, if present
+	data l_src;
+	try {
+		l_src.load_file("data.cc");
+		check(lzw_round_trip("data.cc", l_src), "lzw: source file round trips");
+	} catch (const std::runtime_error&) {
+	}
+
+	// input is not modified, and its byte order and cursors do not matter
+	data l_in(std::string("hello lzw hello lzw hello"));
+	l_in.set_byte_order(data::HOST_ORDER);
+	l_in.set_read_cursor(5);
+	std::vector<uint8_t> l_before = l_in.bytes();
+	data l_out = lzw::compress(l_in);
+	check(l_in.bytes() == l_before && l_in.get_read_cursor() == 5, "lzw: compress leaves input unchanged");
+	l_out.set_byte_order(data::HOST_ORDER);
+	l_out.set_read_cursor(3);
+	check(lzw::decompress(l_out).bytes() == l_before, "lzw: decompress ignores input byte order and cursor");
+
+	// corrupt input
+	auto l_rejects = [](const std::vector<uint8_t>& a_bad) {
+		try { lzw::decompress(data(a_bad.data(), a_bad.size())); } catch (const std::runtime_error&) { return true; }
+		return false;
+	};
+	std::vector<uint8_t> l_good = lzw::compress(l_pro).bytes();
+	check(l_rejects(std::vector<uint8_t>()), "lzw: empty input is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.begin() + 7)), "lzw: truncated header is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.begin() + 8)), "lzw: header without codes is rejected");
+	check(l_rejects(std::vector<uint8_t>(l_good.begin(), l_good.begin() + l_good.size() / 2)), "lzw: truncated stream is rejected");
+	std::vector<uint8_t> l_bad = l_good;
+	l_bad.push_back(0);
+	check(l_rejects(l_bad), "lzw: trailing bytes are rejected");
+	l_bad = l_good;
+	l_bad[7]--;
+	check(l_rejects(l_bad), "lzw: size smaller than the codes is rejected");
+	const uint8_t l_far_code[] = { 0, 0, 0, 0, 0, 0, 0, 1, 0x96, 0x00 };	// code 300 before it is defined
+	check(l_rejects(std::vector<uint8_t>(l_far_code, l_far_code + sizeof(l_far_code))), "lzw: undefined code is rejected");
+}
+
 static bool rle_round_trip(const char *a_label, const data& a_src)
 {
 	data l_packed = rle::compress(a_src);
@@ -902,7 +1024,7 @@ static void run_base64_tests()
 	check(!l_rejects("Zm9vYg=="), "base64: valid input is not rejected");
 }
 
-// compresses every regular file in a directory with each coder and with RLE followed by Huffman or LZMA, verifies each round trip and prints a comparison table
+// compresses every regular file in a directory with each coder and with RLE followed by Huffman, LZMA or LZW, verifies each round trip and prints a comparison table
 static void run_comp_dir_tests(const char *a_dir)
 {
 	namespace fs = std::filesystem;
@@ -921,8 +1043,8 @@ static void run_comp_dir_tests(const char *a_dir)
 
 	struct result {
 		std::string name;
-		size_t in, rle, huff, lzma, rle_huff, rle_lzma;
-		bool rle_ok, huff_ok, lzma_ok, rle_huff_ok, rle_lzma_ok;
+		size_t in, rle, huff, lzma, lzw, rle_huff, rle_lzma, rle_lzw;
+		bool rle_ok, huff_ok, lzma_ok, lzw_ok, rle_huff_ok, rle_lzma_ok, rle_lzw_ok;
 	};
 	std::vector<result> l_results;
 	for (const fs::path& l_path : l_files) {
@@ -931,14 +1053,17 @@ static void run_comp_dir_tests(const char *a_dir)
 		data l_rle = rle::compress(l_src);
 		data l_huff = huffman::compress(l_src);
 		data l_lzma = lzma::compress(l_src);
+		data l_lzw = lzw::compress(l_src);
 		data l_rle_huff = huffman::compress(l_rle);
 		data l_rle_lzma = lzma::compress(l_rle);
-		l_results.push_back({ l_path.filename().string(), l_src.size(), l_rle.size(), l_huff.size(), l_lzma.size(),
-			l_rle_huff.size(), l_rle_lzma.size(),
+		data l_rle_lzw = lzw::compress(l_rle);
+		l_results.push_back({ l_path.filename().string(), l_src.size(), l_rle.size(), l_huff.size(), l_lzma.size(), l_lzw.size(),
+			l_rle_huff.size(), l_rle_lzma.size(), l_rle_lzw.size(),
 			rle::decompress(l_rle).bytes() == l_src.bytes(), huffman::decompress(l_huff).bytes() == l_src.bytes(),
-			lzma::decompress(l_lzma).bytes() == l_src.bytes(),
+			lzma::decompress(l_lzma).bytes() == l_src.bytes(), lzw::decompress(l_lzw).bytes() == l_src.bytes(),
 			rle::decompress(huffman::decompress(l_rle_huff)).bytes() == l_src.bytes(),
-			rle::decompress(lzma::decompress(l_rle_lzma)).bytes() == l_src.bytes() });
+			rle::decompress(lzma::decompress(l_rle_lzma)).bytes() == l_src.bytes(),
+			rle::decompress(lzw::decompress(l_rle_lzw)).bytes() == l_src.bytes() });
 	}
 
 	// packed size, percentage of input and ratio input:packed
@@ -950,30 +1075,34 @@ static void run_comp_dir_tests(const char *a_dir)
 	};
 
 	std::cout << "compression of files in " << a_dir << ":" << std::endl;
-	std::printf("  %-20s %10s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s\n", "file", "input",
-		"rle", "%", "ratio", "huffman", "%", "ratio", "lzma", "%", "ratio", "rle+huffman", "%", "ratio", "rle+lzma", "%", "ratio");
-	size_t l_total_in = 0, l_total_rle = 0, l_total_huff = 0, l_total_lzma = 0, l_total_rle_huff = 0, l_total_rle_lzma = 0;
+	std::printf("  %-20s %10s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s | %10s %7s %8s\n", "file", "input",
+		"rle", "%", "ratio", "huffman", "%", "ratio", "lzma", "%", "ratio", "lzw", "%", "ratio", "rle+huffman", "%", "ratio", "rle+lzma", "%", "ratio", "rle+lzw", "%", "ratio");
+	size_t l_total_in = 0, l_total_rle = 0, l_total_huff = 0, l_total_lzma = 0, l_total_lzw = 0, l_total_rle_huff = 0, l_total_rle_lzma = 0, l_total_rle_lzw = 0;
 	for (const result& l_r : l_results) {
-		std::printf("  %-20s %10zu | %s | %s | %s | %s | %s\n", l_r.name.c_str(), l_r.in, l_cols(l_r.in, l_r.rle).c_str(),
-			l_cols(l_r.in, l_r.huff).c_str(), l_cols(l_r.in, l_r.lzma).c_str(),
-			l_cols(l_r.in, l_r.rle_huff).c_str(), l_cols(l_r.in, l_r.rle_lzma).c_str());
+		std::printf("  %-20s %10zu | %s | %s | %s | %s | %s | %s | %s\n", l_r.name.c_str(), l_r.in, l_cols(l_r.in, l_r.rle).c_str(),
+			l_cols(l_r.in, l_r.huff).c_str(), l_cols(l_r.in, l_r.lzma).c_str(), l_cols(l_r.in, l_r.lzw).c_str(),
+			l_cols(l_r.in, l_r.rle_huff).c_str(), l_cols(l_r.in, l_r.rle_lzma).c_str(), l_cols(l_r.in, l_r.rle_lzw).c_str());
 		l_total_in += l_r.in;
 		l_total_rle += l_r.rle;
 		l_total_rle_huff += l_r.rle_huff;
 		l_total_rle_lzma += l_r.rle_lzma;
 		l_total_huff += l_r.huff;
 		l_total_lzma += l_r.lzma;
+		l_total_lzw += l_r.lzw;
+		l_total_rle_lzw += l_r.rle_lzw;
 	}
-	std::printf("  %-20s %10zu | %s | %s | %s | %s | %s\n", "total", l_total_in, l_cols(l_total_in, l_total_rle).c_str(),
-		l_cols(l_total_in, l_total_huff).c_str(), l_cols(l_total_in, l_total_lzma).c_str(),
-		l_cols(l_total_in, l_total_rle_huff).c_str(), l_cols(l_total_in, l_total_rle_lzma).c_str());
+	std::printf("  %-20s %10zu | %s | %s | %s | %s | %s | %s | %s\n", "total", l_total_in, l_cols(l_total_in, l_total_rle).c_str(),
+		l_cols(l_total_in, l_total_huff).c_str(), l_cols(l_total_in, l_total_lzma).c_str(), l_cols(l_total_in, l_total_lzw).c_str(),
+		l_cols(l_total_in, l_total_rle_huff).c_str(), l_cols(l_total_in, l_total_rle_lzma).c_str(), l_cols(l_total_in, l_total_rle_lzw).c_str());
 
 	for (const result& l_r : l_results) {
 		check(l_r.rle_ok, ("comp dir: rle round trips " + l_r.name).c_str());
 		check(l_r.huff_ok, ("comp dir: huffman round trips " + l_r.name).c_str());
 		check(l_r.lzma_ok, ("comp dir: lzma round trips " + l_r.name).c_str());
+		check(l_r.lzw_ok, ("comp dir: lzw round trips " + l_r.name).c_str());
 		check(l_r.rle_huff_ok, ("comp dir: rle+huffman round trips " + l_r.name).c_str());
 		check(l_r.rle_lzma_ok, ("comp dir: rle+lzma round trips " + l_r.name).c_str());
+		check(l_r.rle_lzw_ok, ("comp dir: rle+lzw round trips " + l_r.name).c_str());
 	}
 }
 
@@ -1238,6 +1367,7 @@ int main(int, char **)
 	run_file_tests();
 	run_huffman_tests();
 	run_lzma_tests();
+	run_lzw_tests();
 	run_rle_tests();
 	run_base64_tests();
 	run_comp_dir_tests("comp_test_cases");

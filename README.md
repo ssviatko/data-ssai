@@ -353,6 +353,34 @@ All header fields are little endian regardless of the data object's byte order. 
 
 The encoder uses a greedy parse: a repeat of one of the last four match distances if there is one, otherwise the longest match from the hash chains (up to 48 candidates), then a one byte repeat, then a literal. It does not use the optimal parsing of the reference encoder, so output is typically 4 to 9% larger than `xz` at its default preset on text and binaries. Matches reach back at most the dictionary size. Incompressible data grows by about 1.5%.
 
+## LZW compression
+
+`lzw.h` and `lzw.cc` compress the bytes of a `data` object with Lempel-Ziv-Welch coding. It is written from scratch, with no external library, and the interface mirrors the other coders.
+
+#### `static data lzw::compress(const data& a_in)`
+Returns a new `data` holding the compressed form of `a_in`. The input is not modified, and its byte order and cursors are ignored.
+
+#### `static data lzw::decompress(const data& a_in)`
+Returns a new `data` holding the original bytes. Throws `std::runtime_error` if `a_in` is not valid compressed data produced by `compress()` (truncated header or codes, a code that is not yet in the dictionary, decoded data that does not match the recorded size, or trailing bytes). The input's byte order and cursors are ignored.
+
+```cpp
+#include "lzw.h"
+
+data packed = lzw::compress(original);
+data restored = lzw::decompress(packed);   // restored.bytes() == original.bytes()
+```
+
+The compressed form is always written in network byte order:
+
+| Field | Size | Notes |
+|---|---|---|
+| Original size | 8 bytes | Nothing else follows if it is 0. |
+| Codes | variable | Packed most significant bit first, the last byte zero padded. |
+
+Codes 0 to 255 stand for single bytes, code 256 clears the dictionary, and codes from 257 upward are added to the dictionary as the data is coded. Codes start out 9 bits wide and grow one bit at a time, up to 16 bits, as the dictionary fills. When it is full (65536 codes) the encoder emits a clear code and starts over with an empty dictionary. There is no end code, because the decoder stops once it has produced the recorded size.
+
+LZW needs no match finder or statistics and is fast, but it only learns strings it has already seen whole, so it compresses less than LZMA (on the test files, roughly 1.4 times larger output) while beating Huffman on most data. Incompressible data expands noticeably, to about 140% of its size for random bytes, because every new byte pair costs a 9 to 16 bit code.
+
 ## Base64
 
 `base64.h` and `base64.cc` encode the bytes of a `data` object as base64 text and decode them again, with the same shape of interface as the compression classes. This is an encoding, not compression: the text is about a third larger than the input.
@@ -383,6 +411,6 @@ data restored = base64::decode(text);          // restored.bytes() == original.b
 
 ## Tests
 
-`main.cc` contains the test cases, in thirteen functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_random_tests()` (random bytes), `run_circular_tests()` (circular reads), `run_concat_tests()` (concatenating constructor), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding), `run_base64_tests()` (base64) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
+`main.cc` contains the test cases, in fourteen functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_random_tests()` (random bytes), `run_circular_tests()` (circular reads), `run_concat_tests()` (concatenating constructor), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_lzw_tests()` (LZW compression), `run_rle_tests()` (run length encoding), `run_base64_tests()` (base64) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
 
-`run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with each of `rle`, `huffman` and `lzma`, and with `rle` followed by `huffman` or by `lzma` (the RLE output is compressed again). It prints a table of input size and, for each of these five,  the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through every combination (the two chained ones are undone in reverse order). Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.
+`run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with each of `rle`, `huffman`, `lzma` and `lzw`, and with `rle` followed by `huffman`, `lzma` or `lzw` (the RLE output is compressed again). It prints a table of input size and, for each of these seven, the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through every combination (the three chained ones are undone in reverse order). Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.
