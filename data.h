@@ -47,6 +47,7 @@ public:
 	void append_double(double a_val);
 	void append_long_double(long double a_val);	// x87 80-bit extended, 10 bytes
 	void append_string(const std::string& a_val);
+	void append_random(size_t a_len);	// a_len bytes from std::random_device; throws std::runtime_error if it cannot supply them
 
 	// write: stores at the write cursor and advances it past the written bytes
 	void write(const uint8_t *a_bytes, size_t a_len);
@@ -59,6 +60,7 @@ public:
 	void write_double(double a_val);
 	void write_long_double(long double a_val);
 	void write_string(const std::string& a_val);
+	void write_random(size_t a_len);	// as append_random, at the write cursor
 
 	// read: fetches from the read cursor and advances it past the bytes read
 	void read(uint8_t *a_bytes, size_t a_len);
@@ -111,6 +113,7 @@ private:
 		bool m_committed = false;
 	};
 
+	static void fill_random(std::vector<uint8_t>& a_buf);
 	void store(const uint8_t *a_src, size_t a_len, size_t a_pos);
 	static size_t int_width(unsigned a_bits);
 	static void check_fits(uint64_t a_val, size_t a_width);

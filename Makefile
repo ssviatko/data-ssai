@@ -1,7 +1,7 @@
 CXX      := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2
 TARGET   := data-ssai
-SRCS     := main.cc data.cc huffman.cc lzma.cc rle.cc
+SRCS     := main.cc data.cc huffman.cc lzma.cc rle.cc base64.cc
 OBJS     := $(SRCS:.cc=.o)
 DEPS     := $(OBJS:.o=.d)
 

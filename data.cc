@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <random>
 #include <stdexcept>
 #include <utility>
 #include <string>
@@ -116,6 +117,19 @@ void data::put_int(uint64_t a_val, size_t a_width, size_t a_pos)
 	store(l_buf, a_width, a_pos);
 }
 
+// fills a_buf with bytes from std::random_device, which on Linux draws on the kernel's
+// cryptographically secure generator (the standard itself does not promise that)
+void data::fill_random(std::vector<uint8_t>& a_buf)
+{
+	std::random_device l_rd;
+	size_t l_i = 0;
+	while (l_i < a_buf.size()) {
+		std::random_device::result_type l_word = l_rd();
+		for (size_t k = 0; k < sizeof(l_word) && l_i < a_buf.size(); k++, l_i++)
+			a_buf[l_i] = static_cast<uint8_t>(l_word >> (k * 8));
+	}
+}
+
 void data::put_long_double(long double a_val, size_t a_pos)
 {
 	// x87 extended is little endian in memory: 8 byte mantissa, then 2 byte sign/exponent.
@@ -220,6 +234,13 @@ void data::append_string(const std::string& a_val)
 	put_string(a_val, m_bytes.size());
 }
 
+void data::append_random(size_t a_len)
+{
+	std::vector<uint8_t> l_buf(a_len);
+	fill_random(l_buf);
+	store(l_buf.data(), a_len, m_bytes.size());
+}
+
 // ---- write at cursor ----
 
 void data::write(const uint8_t *a_bytes, size_t a_len)
@@ -276,6 +297,13 @@ void data::write_long_double(long double a_val)
 void data::write_string(const std::string& a_val)
 {
 	put_string(a_val, m_wcursor);
+}
+
+void data::write_random(size_t a_len)
+{
+	std::vector<uint8_t> l_buf(a_len);
+	fill_random(l_buf);
+	store(l_buf.data(), a_len, m_wcursor);
 }
 
 // ---- read at cursor ----

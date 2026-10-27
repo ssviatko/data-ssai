@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include "base64.h"
 #include "data.h"
 #include "huffman.h"
 #include "lzma.h"
@@ -815,6 +816,92 @@ static void run_rle_tests()
 	check(l_rejects(l_bad), "rle: impossible declared size is rejected");
 }
 
+static std::string base64_text(const data& a_d)
+{
+	return std::string(a_d.bytes().begin(), a_d.bytes().end());
+}
+
+static void run_base64_tests()
+{
+	// RFC 4648 section 10 test vectors
+	const char *l_vec[][2] = {
+		{ "", "" }, { "f", "Zg==" }, { "fo", "Zm8=" }, { "foo", "Zm9v" },
+		{ "foob", "Zm9vYg==" }, { "fooba", "Zm9vYmE=" }, { "foobar", "Zm9vYmFy" },
+	};
+	bool l_enc_ok = true, l_dec_ok = true;
+	for (const auto& l_v : l_vec) {
+		l_enc_ok = l_enc_ok && base64_text(base64::encode(data(std::string(l_v[0])))) == l_v[1];
+		data l_back = base64::decode(data(std::string(l_v[1])));
+		l_dec_ok = l_dec_ok && std::string(l_back.bytes().begin(), l_back.bytes().end()) == l_v[0];
+	}
+	check(l_enc_ok, "base64: encodes the RFC 4648 test vectors");
+	check(l_dec_ok, "base64: decodes the RFC 4648 test vectors");
+
+	// the two characters that differ between alphabets, and bytes with the high bit set
+	const uint8_t l_sym[] = { 0xfb, 0xff, 0xbe, 0xfb, 0xef, 0xff };
+	check(base64_text(base64::encode(data(l_sym, 2))) == "+/8=", "base64: 62 and 63 encode as + and /");
+	check(base64_text(base64::encode(data(l_sym, 6))) == "+/++++//", "base64: high bytes encode correctly");
+	check(base64::decode(data(std::string("+/8="))).bytes() == std::vector<uint8_t>(l_sym, l_sym + 2), "base64: + and / decode");
+
+	// embedded NULs and every byte value round trip, at every length modulo 3
+	data l_all;
+	for (int i = 0; i < 256; i++)
+		l_all.append_uint8(static_cast<uint8_t>(i));
+	bool l_trips = true, l_sizes = true;
+	for (size_t l_len = 0; l_len <= 258; l_len++) {
+		data l_d;
+		for (size_t i = 0; i < l_len; i++)
+			l_d.append_uint8(l_all.bytes()[i % 256]);
+		data l_e = base64::encode(l_d);
+		l_sizes = l_sizes && l_e.size() == (l_len + 2) / 3 * 4;
+		l_trips = l_trips && base64::decode(l_e).bytes() == l_d.bytes();
+	}
+	check(l_sizes, "base64: encoded size is 4 characters per 3 bytes, rounded up");
+	check(l_trips, "base64: all lengths 0 to 258 round trip");
+
+	data l_rnd = make_random(100000, 2024);
+	data l_rnd_enc = base64::encode(l_rnd);
+	check(base64::decode(l_rnd_enc).bytes() == l_rnd.bytes(), "base64: 100000 random bytes round trip");
+	check(l_rnd_enc.size() == 133336, "base64: 100000 bytes encode to 133336 characters");
+	bool l_alpha = true;
+	for (uint8_t l_ch : l_rnd_enc.bytes())
+		l_alpha = l_alpha && ((l_ch >= 'A' && l_ch <= 'Z') || (l_ch >= 'a' && l_ch <= 'z') || (l_ch >= '0' && l_ch <= '9') || l_ch == '+' || l_ch == '/' || l_ch == '=');
+	check(l_alpha, "base64: output uses only the standard alphabet and padding");
+
+	// input is not modified, and its byte order and cursors do not matter
+	data l_in(std::string("hello base64"));
+	l_in.set_byte_order(data::HOST_ORDER);
+	l_in.set_read_cursor(5);
+	std::vector<uint8_t> l_before = l_in.bytes();
+	data l_out = base64::encode(l_in);
+	check(l_in.bytes() == l_before && l_in.get_read_cursor() == 5, "base64: encode leaves input unchanged");
+	check(base64_text(l_out) == "aGVsbG8gYmFzZTY0", "base64: encode result");
+	l_out.set_byte_order(data::HOST_ORDER);
+	l_out.set_read_cursor(3);
+	check(base64::decode(l_out).bytes() == l_before, "base64: decode ignores input byte order and cursor");
+
+	// invalid input
+	auto l_rejects = [](const char *a_text) {
+		try { base64::decode(data(std::string(a_text))); } catch (const std::runtime_error&) { return true; }
+		return false;
+	};
+	check(l_rejects("Zg="), "base64: length not a multiple of 4 is rejected");
+	check(l_rejects("Zm9vY"), "base64: length 5 is rejected");
+	check(l_rejects("Zm9v!A=="), "base64: invalid character is rejected");
+	check(l_rejects("Zm9 vYg=="), "base64: whitespace is rejected");
+	check(l_rejects("Zm9v\n"), "base64: line break is rejected");
+	check(l_rejects("-_8="), "base64: URL-safe characters are rejected");
+	check(l_rejects("Z==="), "base64: three padding characters are rejected");
+	check(l_rejects("===="), "base64: padding only is rejected");
+	check(l_rejects("Zg=A"), "base64: character after padding is rejected");
+	check(l_rejects("Zg==Zm9v"), "base64: padding before the last group is rejected");
+	check(l_rejects("Zm9=Zm9v"), "base64: padding in an inner group is rejected");
+	check(l_rejects("Zh=="), "base64: nonzero unused bits before == are rejected");
+	check(l_rejects("Zm9="), "base64: nonzero unused bits before = are rejected");
+	check(l_rejects("Zm9\xc3\xa9"), "base64: non-ASCII bytes are rejected");
+	check(!l_rejects("Zm9vYg=="), "base64: valid input is not rejected");
+}
+
 // compresses every regular file in a directory with each coder and with RLE followed by Huffman or LZMA, verifies each round trip and prints a comparison table
 static void run_comp_dir_tests(const char *a_dir)
 {
@@ -888,6 +975,74 @@ static void run_comp_dir_tests(const char *a_dir)
 		check(l_r.rle_huff_ok, ("comp dir: rle+huffman round trips " + l_r.name).c_str());
 		check(l_r.rle_lzma_ok, ("comp dir: rle+lzma round trips " + l_r.name).c_str());
 	}
+}
+
+static void run_random_tests()
+{
+	// append_random
+	data l_a;
+	l_a.append_uint8(0x11);
+	l_a.append_random(10);
+	check(l_a.size() == 11 && l_a.bytes()[0] == 0x11 && l_a.get_write_cursor() == 11, "append_random appends n bytes and leaves the write cursor at the end");
+	data l_zero;
+	l_zero.append_random(0);
+	check(l_zero.size() == 0, "append_random of 0 bytes adds nothing");
+	bool l_sizes = true;
+	for (size_t n = 0; n <= 9; n++) {
+		data l_d;
+		l_d.append_random(n);
+		l_sizes = l_sizes && l_d.size() == n;
+	}
+	check(l_sizes, "append_random gives exactly n bytes for lengths not a multiple of 4");
+
+	// write_random
+	data l_w;
+	l_w.append_uint32(0xaaaaaaaa);
+	l_w.append_uint32(0xbbbbbbbb);
+	l_w.append_uint32(0xcccccccc);
+	l_w.set_write_cursor(4);
+	l_w.write_random(4);
+	check(l_w.size() == 12 && l_w.get_write_cursor() == 8, "write_random overwrites in place and advances the write cursor");
+	check(l_w.bytes()[0] == 0xaa && l_w.bytes()[3] == 0xaa && l_w.bytes()[8] == 0xcc && l_w.bytes()[11] == 0xcc, "write_random leaves the bytes around it alone");
+	l_w.set_write_cursor(10);
+	l_w.write_random(6);
+	check(l_w.size() == 16 && l_w.get_write_cursor() == 16 && l_w.bytes()[9] == 0xcc, "write_random extends the buffer past the end");
+	data l_w0;
+	l_w0.append_uint8(5);
+	l_w0.set_write_cursor(0);
+	l_w0.write_random(0);
+	check(l_w0.size() == 1 && l_w0.get_write_cursor() == 0 && l_w0.bytes()[0] == 5, "write_random of 0 bytes changes nothing");
+
+	// the bytes are random: all different between calls, and statistically balanced
+	data l_x, l_y;
+	l_x.append_random(32);
+	l_y.append_random(32);
+	check(l_x.bytes() != l_y.bytes(), "two 32 byte draws differ");
+	data l_big;
+	l_big.append_random(100000);
+	uint64_t l_sum = 0;
+	bool l_seen[256] = { false };
+	for (uint8_t l_b : l_big.bytes()) {
+		l_sum += l_b;
+		l_seen[l_b] = true;
+	}
+	double l_mean = static_cast<double>(l_sum) / l_big.size();
+	check(l_mean > 125.5 && l_mean < 129.5, "mean of 100000 random bytes is near 127.5");
+	check(std::all_of(l_seen, l_seen + 256, [](bool a_b) { return a_b; }), "100000 random bytes include every byte value");
+	// no byte value should be far from its expected count of about 390; this is more than 8 standard deviations
+	size_t l_counts[256] = { 0 };
+	for (uint8_t l_b : l_big.bytes())
+		l_counts[l_b]++;
+	check(*std::min_element(l_counts, l_counts + 256) > 250 && *std::max_element(l_counts, l_counts + 256) < 540, "byte value counts are evenly spread");
+	size_t l_ones = 0;
+	for (uint8_t l_b : l_big.bytes()) {
+		for (int i = 0; i < 8; i++)
+			l_ones += (l_b >> i) & 1;
+	}
+	check(l_ones > 396000 && l_ones < 404000, "about half the bits are set");
+
+	// random data does not compress
+	check(lzma::compress(l_big).size() > l_big.size(), "random bytes do not compress");
 }
 
 static void run_circular_tests()
@@ -1037,11 +1192,13 @@ int main(int, char **)
 	run_cursor_tests();
 	run_string_tests();
 	run_arbitrary_tests();
+	run_random_tests();
 	run_circular_tests();
 	run_file_tests();
 	run_huffman_tests();
 	run_lzma_tests();
 	run_rle_tests();
+	run_base64_tests();
 	run_comp_dir_tests("comp_test_cases");
 	std::cout << (g_failures ? "tests FAILED" : "all tests passed") << std::endl;
 	personal_tests();

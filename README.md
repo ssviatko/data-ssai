@@ -140,6 +140,10 @@ Appends the 10 byte Intel x87 80-bit extended precision representation: an 8 byt
 #### `void append_string(const std::string& a_val)`
 Appends a `uint32` byte count (in the current byte order) followed by the string's bytes. There is no terminator, so strings may contain embedded NUL bytes. Throws `std::length_error` if the string is longer than `UINT32_MAX` bytes.
 
+#### `void append_random(size_t a_len)`
+Appends `a_len` random bytes drawn from `std::random_device`. Byte order does not apply. See [Random bytes](#random-bytes).
+
+
 ### Write at the write cursor
 
 Each write method stores at the write cursor, overwrites any bytes already there, extends the buffer if the value runs past the end, and then advances the write cursor past what it wrote. Encoding is identical to the matching `append_*` method.
@@ -164,6 +168,10 @@ Write 4, 8 or 10 bytes respectively, in the formats described under the append m
 #### `void write_string(const std::string& a_val)`
 Writes the length prefix and string bytes. Throws `std::length_error` for strings longer than `UINT32_MAX`.
 
+#### `void write_random(size_t a_len)`
+Writes `a_len` random bytes at the write cursor, overwriting existing bytes and extending the buffer as `write` does, then advances the write cursor. See [Random bytes](#random-bytes).
+
+
 ### Read at the read cursor
 
 Each read method fetches from the read cursor and advances it past the bytes consumed. Multi-byte values are decoded using the current byte order, so set the order to match how the data was written. If fewer bytes remain than are needed, the method throws `std::out_of_range` and the read cursor does not move.
@@ -187,6 +195,10 @@ Read 4, 8 or 10 bytes respectively and reconstruct the value. `read_long_double`
 
 #### `std::string read_string()`
 Reads a `uint32` length prefix, then that many bytes. Throws `std::out_of_range` if either the prefix or the body is truncated, and leaves the read cursor where it started.
+
+### Random bytes
+
+`append_random` and `write_random` take their bytes from `std::random_device`, the standard C++ source of non-deterministic randomness. With GCC and Clang on Linux it reads the kernel's cryptographically secure generator (hardware instructions or `getrandom`), which makes it suitable for keys and nonces there. The C++ standard itself does not guarantee that, so on other platforms check what your library does. A fresh `std::random_device` is created for each call, and the call throws `std::runtime_error` if the device cannot supply bytes. There is no way to seed it, so the output is not reproducible.
 
 ### Circular read
 
@@ -332,6 +344,27 @@ All header fields are little endian regardless of the data object's byte order. 
 
 The encoder uses a greedy parse: a repeat of one of the last four match distances if there is one, otherwise the longest match from the hash chains (up to 48 candidates), then a one byte repeat, then a literal. It does not use the optimal parsing of the reference encoder, so output is typically 4 to 9% larger than `xz` at its default preset on text and binaries. Matches reach back at most the dictionary size. Incompressible data grows by about 1.5%.
 
+## Base64
+
+`base64.h` and `base64.cc` encode the bytes of a `data` object as base64 text and decode them again, with the same shape of interface as the compression classes. This is an encoding, not compression: the text is about a third larger than the input.
+
+#### `static data base64::encode(const data& a_in)`
+Returns a new `data` holding the base64 text for the bytes in `a_in`, using the standard alphabet of RFC 4648 section 4 (`A-Z a-z 0-9 + /`) with `=` padding and no line breaks. The result is `4 * ceil(size / 3)` ASCII characters. The input is not modified, and its byte order and cursors are ignored.
+
+#### `static data base64::decode(const data& a_in)`
+Returns a new `data` holding the decoded bytes. The decoder is strict and throws `std::runtime_error` unless `a_in` is exactly what `encode` could have produced:
+- the length must be a multiple of 4;
+- every character must be in the alphabet, so whitespace, line breaks and the URL-safe `-` and `_` are rejected;
+- `=` may appear only as the last one or two characters;
+- the unused low bits of the last character must be zero, so each input has just one valid encoding.
+
+```cpp
+#include "base64.h"
+
+data text = base64::encode(original);          // "Zm9vYmFy" for the bytes "foobar"
+data restored = base64::decode(text);          // restored.bytes() == original.bytes()
+```
+
 ## Platform requirements
 
 `data.cc` contains static assertions that stop the build unless:
@@ -341,6 +374,6 @@ The encoder uses a greedy parse: a repeat of one of the last four match distance
 
 ## Tests
 
-`main.cc` contains the test cases, in ten functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_circular_tests()` (circular reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
+`main.cc` contains the test cases, in twelve functions called from `main`: `run_tests()` (basic operations, byte order, integers, floats, display), `run_cursor_tests()` (cursors, write-at-cursor, reads), `run_random_tests()` (random bytes), `run_circular_tests()` (circular reads), `run_string_tests()` (strings), `run_arbitrary_tests()` (arbitrary width integers), `run_file_tests()` (file I/O), `run_huffman_tests()` (Huffman compression), `run_lzma_tests()` (LZMA compression), `run_rle_tests()` (run length encoding), `run_base64_tests()` (base64) and `run_comp_dir_tests()` (compression of real files). Each check prints `PASS` or `FAIL`, and the program exits with status 1 if any check fails.
 
 `run_comp_dir_tests()` compresses every regular file in the `comp_test_cases` directory (relative to the working directory, so run `./data-ssai` from the project folder) with each of `rle`, `huffman` and `lzma`, and with `rle` followed by `huffman` or by `lzma` (the RLE output is compressed again). It prints a table of input size and, for each of these five,  the packed size, the packed size as a percentage of input and the ratio input:packed, with a total row. It then checks that every file round trips through every combination (the two chained ones are undone in reverse order). Add files to the directory to include them. If the directory is missing or empty the test prints `SKIP` and does not fail.
